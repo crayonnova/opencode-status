@@ -5,7 +5,9 @@ ARG ALPINE_VERSION=3.21
 FROM golang:${GO_VERSION}-alpine${ALPINE_VERSION} AS build
 WORKDIR /src
 
-RUN apk add --no-cache build-base sqlite-dev
+RUN apk add --no-cache \
+    build-base=0.5-r3 \
+    sqlite-dev=3.48.0-r4
 
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod \
@@ -17,9 +19,9 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     go build -trimpath -ldflags="-s -w" -o /out/opencode-status ./cmd/opencode-status
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian13:nonroot
 COPY --from=build /out/opencode-status /usr/local/bin/opencode-status
-USER nonroot:nonroot
+USER 1000:1000
 WORKDIR /data
 VOLUME ["/data"]
 ENV OPENCODE_STATUS_DB=/data/history.db
