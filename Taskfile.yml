@@ -1,0 +1,20 @@
+build:
+  cmds:
+    - go build -trimpath -ldflags="-s -w" -o bin/opencode-status ./cmd/opencode-status
+
+test:
+  cmds:
+    - go vet ./...
+    - go test -race ./...
+
+run:
+  cmds:
+    - bin/opencode-status --no-web --interval 10s
+
+docker:
+  cmds:
+    - docker build -f deploy/Dockerfile -t opencode-status:local .
+
+clean:
+  cmds:
+    - rm -rf bin/

@@ -1,0 +1,85 @@
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: go (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: go mod download
+        run: go mod download
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test -race -coverprofile=coverage-${{ matrix.os }}.out ./...
+
+      - name: go build
+        run: go build -trimpath -ldflags="-s -w" -o opencode-status-${{ matrix.os }} ./cmd/opencode-status
+
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: bin-${{ matrix.os }}
+          path: opencode-status-${{ matrix.os }}
+          retention-days: 7
+
+  nix-check:
+    name: nix flake check
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: cachix/install-nix-action@v31.11.1
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: flake check
+        run: nix flake check --no-build --show-trace
+        continue-on-error: true
+
+      - name: flake show
+        run: nix flake show --json | jq '.["nixosModules"]'
+
+  dockerfile-lint:
+    name: dockerfile lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: hadolint/hadolint-action@v3.5.0
+        with:
+          dockerfile: deploy/Dockerfile
+          failure-threshold: warning

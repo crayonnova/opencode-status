@@ -1,0 +1,257 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+      - "v*.*.*-rc*"
+      - "v*.*.*-beta*"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Tag/branch to build"
+        required: true
+        default: "main"
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # ------------------------------------------------------------------
+  # 1. Lint + test (gates the rest)
+  # ------------------------------------------------------------------
+  lint-test:
+    name: lint & test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: go mod download
+        run: go mod download
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test -race -coverprofile=coverage.out ./...
+
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: coverage
+          path: coverage.out
+          retention-days: 7
+
+  # ------------------------------------------------------------------
+  # 2. Nix build matrix: linux + darwin × x86_64 + aarch64
+  #    Single runner per arch, cross-compile via Go to other arch.
+  # ------------------------------------------------------------------
+  nix-build:
+    name: nix (${{ matrix.system }})
+    needs: lint-test
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: x86_64-linux
+            runner: ubuntu-24.04
+            nix_system: x86_64-linux
+          - system: aarch64-linux
+            runner: ubuntu-24.04-arm
+            nix_system: aarch64-linux
+          - system: x86_64-darwin
+            runner: macos-15
+            nix_system: x86_64-darwin
+          - system: aarch64-darwin
+            runner: macos-15
+            nix_system: aarch64-darwin
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: cachix/install-nix-action@v31.11.1
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: build (nix)
+        run: nix build --print-out-paths .#default --no-link
+
+      - name: copy result
+        run: |
+          mkdir -p dist
+          cp -L $(nix build --print-out-paths .#default --no-link)/bin/opencode-status \
+                dist/opencode-status-${{ matrix.system }}
+
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: bin-${{ matrix.system }}
+          path: dist/opencode-status-${{ matrix.system }}
+          if-no-files-found: error
+          retention-days: 14
+
+  # ------------------------------------------------------------------
+  # 3. Docker multi-arch build → push to ghcr.io
+  #    Single x86_64 runner + QEMU + buildx for both arches.
+  # ------------------------------------------------------------------
+  docker:
+    name: docker (${{ matrix.platform }})
+    needs: lint-test
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+          - platform: linux/arm64
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: docker/setup-qemu-action@v4.2.0
+
+      - uses: docker/setup-buildx-action@v4.3.0
+        with:
+          driver-opts: image=moby/buildkit:latest
+
+      - uses: docker/login-action@v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v6.2.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.title=opencode-status
+            org.opencontainers.image.description=Monitor opencode free models
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.licenses=MIT
+
+      - name: build & push
+        uses: docker/build-push-action@v7.3.0
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=docker-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=docker-${{ matrix.arch }}
+          provenance: true
+          sbom: false
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
+
+      - name: inspect manifest
+        run: |
+          docker buildx imagetools inspect \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+
+  # ------------------------------------------------------------------
+  # 4. Multi-platform manifest (combines amd64+arm64 into single image)
+  # ------------------------------------------------------------------
+  docker-manifest:
+    name: docker manifest
+    needs: docker
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/setup-buildx-action@v4.3.0
+        with:
+          driver-opts: image=moby/buildkit:latest
+      - name: build manifest
+        run: |
+          docker buildx imagetools create \
+            --tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }} \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}-linux-amd64 \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}-linux-arm64
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            docker buildx imagetools create \
+              --tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
+              ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}-linux-amd64 \
+              ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}-linux-arm64
+          fi
+
+  # ------------------------------------------------------------------
+  # 5. GitHub release: bundle all binaries + SBOM-equivalent (checksums)
+  # ------------------------------------------------------------------
+  release:
+    name: github release
+    needs: [nix-build, docker, docker-manifest]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: download all binaries
+        uses: actions/download-artifact@v8.0.1
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: checksums
+        working-directory: dist
+        run: |
+          sha256sum opencode-status-* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: create release
+        uses: softprops/action-gh-release@v3.0.2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/opencode-status-*
+            dist/SHA256SUMS
+          fail_on_unmatched_files: true
+          body: |
+            ## opencode-status ${{ github.ref_name }}
+
+            ### Install
+
+            #### Nix
+            ```nix
+            inputs.opencode-status.url = "github:${{ github.repository }}";
+            # in outputs: packages.${system}.default
+            ```
+
+            #### Docker
+            ```bash
+            docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+            ```
+
+            #### Standalone binary
+            Download your platform tarball below, extract, run `./opencode-status`.
+
+            ### Supported platforms
+            - linux/amd64, linux/arm64
+            - darwin/amd64, darwin/arm64
