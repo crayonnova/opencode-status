@@ -33,6 +33,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
+          ref: ${{ inputs.ref || github.ref }}
 
       - uses: actions/setup-go@v7.0.0
         with:
@@ -73,7 +74,7 @@ jobs:
             runner: ubuntu-24.04-arm
             nix_system: aarch64-linux
           - system: x86_64-darwin
-            runner: macos-15
+            runner: macos-15-intel
             nix_system: x86_64-darwin
           - system: aarch64-darwin
             runner: macos-15
@@ -83,6 +84,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
+          ref: ${{ inputs.ref || github.ref }}
 
       - uses: cachix/install-nix-action@v31.11.1
         with:
@@ -91,13 +93,30 @@ jobs:
             experimental-features = nix-command flakes
 
       - name: build (nix)
-        run: nix build --print-out-paths .#default --no-link
+        id: build
+        run: |
+          out=$(nix build --print-out-paths --no-link \
+                  ".#packages.${{ matrix.nix_system }}.default")
+          echo "out=$out" >> "$GITHUB_OUTPUT"
 
       - name: copy result
         run: |
           mkdir -p dist
-          cp -L $(nix build --print-out-paths .#default --no-link)/bin/opencode-status \
+          cp -L "${{ steps.build.outputs.out }}/bin/opencode-status" \
                 dist/opencode-status-${{ matrix.system }}
+
+      # Guards against silently shipping a binary for the runner's own arch
+      # under a different platform's name.
+      - name: verify arch
+        run: |
+          bin=dist/opencode-status-${{ matrix.system }}
+          file "$bin"
+          case "${{ matrix.system }}" in
+            x86_64-*)  want='x86[-_]64|x86-64' ;;
+            aarch64-*) want='aarch64|arm64' ;;
+          esac
+          file "$bin" | grep -Eqi "$want" || {
+            echo "::error::$bin is not ${{ matrix.system }}"; exit 1; }
 
       - uses: actions/upload-artifact@v7.0.1
         with:
@@ -126,6 +145,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
+          ref: ${{ inputs.ref || github.ref }}
 
       - uses: docker/setup-qemu-action@v4.2.0
 
@@ -194,7 +214,7 @@ jobs:
       - name: build manifest
         run: |
           docker buildx imagetools create \
-          --tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }} \
+          --tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.ref || github.ref_name }} \
           ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}-amd64 \
           ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}-arm64
   # ------------------------------------------------------------------
@@ -208,6 +228,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
+          ref: ${{ inputs.ref || github.ref }}
 
       - name: download all binaries
         uses: actions/download-artifact@v8.0.1
@@ -224,14 +245,14 @@ jobs:
       - name: create release
         uses: softprops/action-gh-release@v3.0.2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ inputs.ref || github.ref_name }}
           generate_release_notes: true
           files: |
             dist/opencode-status-*
             dist/SHA256SUMS
           fail_on_unmatched_files: true
           body: |
-            ## opencode-status ${{ github.ref_name }}
+            ## opencode-status ${{ inputs.ref || github.ref_name }}
 
             ### Install
 
@@ -243,7 +264,7 @@ jobs:
 
             #### Docker
             ```bash
-            docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+            docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.ref || github.ref_name }}
             ```
 
             #### Standalone binary
