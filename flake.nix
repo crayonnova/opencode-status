@@ -28,7 +28,7 @@
             homepage = "https://github.com/nova/opencode-status";
             license = licenses.mit;
             mainProgram = "opencode-status";
-            platforms = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
+            platforms = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
           };
         };
 

@@ -56,8 +56,8 @@ jobs:
           retention-days: 7
 
   # ------------------------------------------------------------------
-  # 2. Nix build matrix: linux + darwin × x86_64 + aarch64
-  #    Single runner per arch, cross-compile via Go to other arch.
+  # 2. Nix build matrix. Every target builds natively on a runner of its own
+  #    architecture — go-sqlite3 is cgo, so there is no cross-compilation.
   # ------------------------------------------------------------------
   nix-build:
     name: nix (${{ matrix.system }})
@@ -73,9 +73,9 @@ jobs:
           - system: aarch64-linux
             runner: ubuntu-24.04-arm
             nix_system: aarch64-linux
-          - system: x86_64-darwin
-            runner: macos-15-intel
-            nix_system: x86_64-darwin
+          # x86_64-darwin intentionally absent: nixpkgs 26.11 dropped support
+          # for it, and go-sqlite3 is cgo so a GOARCH cross-compile is not an
+          # option either. See release notes #x86_64-darwin-26.11.
           - system: aarch64-darwin
             runner: macos-15
             nix_system: aarch64-darwin
@@ -272,4 +272,4 @@ jobs:
 
             ### Supported platforms
             - linux/amd64, linux/arm64
-            - darwin/amd64, darwin/arm64
+            - darwin/arm64 (Apple Silicon)
