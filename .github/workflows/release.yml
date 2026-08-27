@@ -154,7 +154,6 @@ jobs:
             org.opencontainers.image.description=Monitor opencode free models
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.licenses=MIT
-
       - name: build & push
         uses: docker/build-push-action@v7.3.0
         with:
@@ -192,14 +191,11 @@ jobs:
           docker buildx imagetools create \
             --tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }} \
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}-linux-amd64 \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}-linux-arm64
-          if [ "${{ github.ref_type }}" = "tag" ]; then
-            docker buildx imagetools create \
-              --tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
-              ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}-linux-amd64 \
-              ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}-linux-arm64
-          fi
-
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}-linux-arm64 || \
+          docker buildx imagetools create \
+            --tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }} \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
   # ------------------------------------------------------------------
   # 5. GitHub release: bundle all binaries + SBOM-equivalent (checksums)
   # ------------------------------------------------------------------
