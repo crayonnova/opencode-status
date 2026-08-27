@@ -8,7 +8,7 @@
 
   outputs = { self, nixpkgs, flake-utils }:
     let
-      version = "0.1.0";
+      version = "0.1.2";
     in
     flake-utils.lib.eachDefaultSystem (system:
       let
